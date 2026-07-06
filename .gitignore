@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Builds and generated output
+dist/
+build/
+coverage/
+.cache/
+.parcel-cache/
+.vite/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local runtime/save state
+*.local
+*.save
+*.sqlite
+*.sqlite3
+localStorage/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
