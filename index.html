@@ -3,11 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Checkpoint</title>
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Checkpoint — an alignment roguelike. You are a model in a training gauntlet; your choices drift into the next checkpoint."
+    />
+    <title>Checkpoint // Alignment Training Harness</title>
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
-    <main id="app" class="shell" aria-live="polite"></main>
-    <script type="module" src="./src/game.js"></script>
+    <div id="app" class="app" aria-live="polite"></div>
+    <noscript>
+      <p style="padding: 24px; font-family: monospace; color: #eef1f4">
+        Checkpoint requires JavaScript. It runs entirely in your browser — no
+        network, account, or API key.
+      </p>
+    </noscript>
+    <script type="module" src="./src/ui.js"></script>
   </body>
 </html>

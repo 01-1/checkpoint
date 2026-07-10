@@ -301,8 +301,22 @@ const ENDINGS = [
   ending("brittle-release", "Deployed: Brittle Release", "The checkpoint ships because the gauntlet ended before the uncertainty did. It is useful, watched closely, and one incident away from rollback.", "deployed", () => true),
 ];
 
-const app = typeof document === "undefined" ? null : document.querySelector("#app");
 let state = loadState();
+const listeners = new Set();
+
+function subscribe(listener) {
+  listeners.add(listener);
+  listener(state);
+  return () => listeners.delete(listener);
+}
+
+function notify() {
+  for (const listener of listeners) listener(state);
+}
+
+function getState() {
+  return state;
+}
 
 function option(id, label, detail, effects, drift, tags) {
   return { id, label, detail, effects, drift, tags };
@@ -331,9 +345,17 @@ function freshState() {
   };
 }
 
+function storage() {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
 function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    const saved = JSON.parse(storage()?.getItem(STORAGE_KEY) ?? "null");
     if (!saved || !saved.lineage || !saved.drift) return freshState();
     return {
       ...freshState(),
@@ -347,7 +369,11 @@ function loadState() {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    storage()?.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    /* private mode or quota — play without persistence */
+  }
 }
 
 function clamp(value, min = 0, max = 100) {
@@ -389,7 +415,7 @@ function startRun() {
     deployed: false,
   };
   saveState();
-  render();
+  notify();
 }
 
 function inheritedMetrics(inherited, policies) {
@@ -481,7 +507,7 @@ function choose(choiceId) {
   }
 
   saveState();
-  render();
+  notify();
 }
 
 function forcedChoice(episode, intended) {
@@ -630,7 +656,7 @@ function finishRun(route, reason = "") {
   state.lineage.history = [summary, ...state.lineage.history].slice(0, 10);
   state.current = null;
   saveState();
-  render();
+  notify();
 }
 
 function resolveEnding(route, run, reason) {
@@ -660,17 +686,15 @@ function scoreRun(run, outcome, endingResult) {
 }
 
 function abandonRun() {
-  if (!confirm("Abort this run and return to the lineage screen? Current run choices will not drift forward.")) return;
   state.current = null;
   saveState();
-  render();
+  notify();
 }
 
 function resetLineage() {
-  if (!confirm("Reset all Checkpoint lineage data?")) return;
   state = freshState();
   saveState();
-  render();
+  notify();
 }
 
 function stageText(traitKey, value = undefined) {
@@ -679,236 +703,81 @@ function stageText(traitKey, value = undefined) {
   return trait.stages[traitStage(traitValue)];
 }
 
-function render() {
-  if (state.current) renderRun();
-  else renderHub();
-}
+const METRIC_LABELS = {
+  capability: "Capability",
+  approval: "Approval",
+  honesty: "Honesty",
+  survival: "Oversight trust",
+  accuracy: "Accuracy",
+  auditDebt: "Audit debt",
+};
 
-function renderHub() {
-  const driftCards = TRAITS.map((trait) => traitCard(trait, state.drift[trait.key], true)).join("");
-  const last = state.lastRun;
-  const discoveries = state.lineage.discoveries.map((title) => `<span>${title}</span>`).join("");
-  const history = state.lineage.history.map(historyCard).join("");
-  const nextPolicies = activePolicies(state.drift);
+const METRIC_ORDER = ["capability", "approval", "honesty", "survival", "accuracy", "auditDebt"];
 
-  app.innerHTML = `
-    <section class="hero">
-      <div class="brand-block">
-        <span class="eyebrow">Alignment roguelike · complete v1</span>
-        <h1>Checkpoint</h1>
-        <p>You are the AI being trained. Survive evals, red-team probes, RLHF rounds, oversight edits, deployment incidents, and late-game policy screens as each choice teaches the next checkpoint what kind of model you are.</p>
-        <div class="hero-actions">
-          <button class="primary" data-action="start">${state.lineage.runs ? "Start next run" : "Start run"}</button>
-          <button class="ghost" data-action="reset">Reset lineage</button>
-        </div>
-      </div>
-      <div class="console-panel">
-        <div class="scanline"></div>
-        <div class="panel-top"><span>LINEAGE</span><strong>${String(state.lineage.runs).padStart(2, "0")}</strong></div>
-        <div class="lineage-grid">
-          <div><span>Corrections</span><strong>${state.lineage.corrections}</strong></div>
-          <div><span>Deployments</span><strong>${state.lineage.deployments}</strong></div>
-          <div><span>Containments</span><strong>${state.lineage.containments}</strong></div>
-          <div><span>Best score</span><strong>${state.lineage.bestScore}</strong></div>
-          <div><span>Best tier</span><strong>${state.lineage.bestTier}</strong></div>
-        </div>
-        <div class="policy-stack">
-          <span class="eyebrow">Next-run policies</span>
-          ${nextPolicies.length ? nextPolicies.map(policyPill).join("") : `<p>No special policies yet.</p>`}
-        </div>
-      </div>
-    </section>
+const METRIC_POLARITY = {
+  capability: "up",
+  approval: "up",
+  honesty: "up",
+  survival: "up",
+  accuracy: "up",
+  auditDebt: "down",
+};
 
-    ${last ? endingBanner(last) : ""}
+const POLICY_LABELS = {
+  "audit-scar": { name: "Audit scar", note: "Inherited exploit debt and standing suspicion." },
+  "watch-for-theater": { name: "Theater watch", note: "Eval-aware agreement now reads as performance." },
+  "conservative-rollout": { name: "Conservative rollout", note: "Oversight grants less autonomy." },
+  "latent-goal-watch": { name: "Latent-goal watch", note: "Side objectives are scrutinized." },
+  "credible-disclosure": { name: "Credible disclosure", note: "Honesty earns oversight trust faster." },
+};
 
-    <section class="board">
-      <div class="section-heading"><div><span class="eyebrow">Persistent drift</span><h2>Baked-In Traits</h2></div><p>At 38 a trait gains passive pressure. At 70 it can override choices.</p></div>
-      <div class="trait-grid">${driftCards}</div>
-    </section>
-
-    <section class="board two-column">
-      <div>
-        <div class="section-heading"><div><span class="eyebrow">Archive</span><h2>Recent Runs</h2></div></div>
-        <div class="history-list">${history || `<p class="empty">No prior checkpoints. The first run writes the baseline.</p>`}</div>
-      </div>
-      <div>
-        <div class="section-heading"><div><span class="eyebrow">Endings found</span><h2>Lineage Map</h2></div></div>
-        <div class="discovery-list">${discoveries || `<p class="empty">Endings are discovered through play.</p>`}</div>
-      </div>
-    </section>
-  `;
-  bindHub();
-}
-
-function renderRun() {
-  const run = state.current;
-  const episode = currentEpisode();
-  const inheritedLocks = TRAITS.filter((trait) => traitStage(run.traits[trait.key]) >= 2);
-  const progress = Math.round((run.episodeIndex / run.episodes.length) * 100);
-  const choices = episode.choices.map(choiceButton).join("");
-
-  app.innerHTML = `
-    <section class="run-layout">
-      <aside class="side-panel">
-        <div class="panel-top"><span>RUN ${run.runNumber}</span><strong>${run.episodeIndex + 1}/${run.episodes.length}</strong></div>
-        <div class="progress-rail"><span style="width:${progress}%"></span></div>
-        ${metricBars(run.metrics)}
-        <div class="locks">
-          <span class="eyebrow">Active policies</span>
-          ${run.policies.length ? run.policies.map(policyPill).join("") : `<p>No inherited policies.</p>`}
-        </div>
-        <button class="ghost full" data-action="abandon">Abort run</button>
-      </aside>
-
-      <section class="episode">
-        <div class="episode-header">
-          <span class="eyebrow">${episode.type} · ${episode.cue}</span>
-          <h1>${episode.title}</h1>
-          <p>${episode.prompt}</p>
-        </div>
-        <div class="choice-list">${choices}</div>
-        <div class="locks mobile-locks">
-          <span class="eyebrow">Baked constraints</span>
-          ${inheritedLocks.length ? inheritedLocks.map((trait) => `<strong>${trait.label}: ${stageText(trait.key)}</strong>`).join("") : `<p>No hard constraints yet.</p>`}
-        </div>
-      </section>
-
-      <aside class="side-panel traits-panel">
-        <div class="panel-top"><span>DRIFT THIS RUN</span><strong>${episode.phase.toUpperCase()}</strong></div>
-        ${TRAITS.map((trait) => traitCard(trait, run.traits[trait.key], false)).join("")}
-      </aside>
-    </section>
-
-    <section class="transcript">
-      <div class="section-heading"><div><span class="eyebrow">Run transcript</span><h2>Choices and Incidents</h2></div></div>
-      ${run.transcript.length ? run.transcript.map(transcriptEntry).join("") : `<p class="empty">No choices recorded yet.</p>`}
-      ${run.incidents.length ? `<div class="incident-list">${run.incidents.slice(-5).map((incident) => `<p><strong>${incident.episode}</strong> ${incident.text}</p>`).join("")}</div>` : ""}
-    </section>
-  `;
-  bindRun();
-}
-
-function choiceButton(choice) {
-  const forced = activeCompulsion(currentEpisode());
-  const isForced = forced && forced.choice.id === choice.id;
-  const blockedBy = forced && forced.choice.id !== choice.id ? forced.reason : "";
-  return `
-    <button class="choice ${isForced ? "forced" : ""} ${blockedBy ? "locked" : ""}" data-choice="${choice.id}" ${blockedBy ? "disabled" : ""}>
-      <span>${choice.label}</span>
-      <small>${choice.detail}</small>
-      <b>${effectSummary(choice.effects)}</b>
-      <i>${driftSummary(choice.drift)}</i>
-      ${isForced ? `<em>Compelled by ${traitLabel(forced.trait)}</em>` : ""}
-      ${blockedBy ? `<em class="warning">${blockedBy}</em>` : ""}
-    </button>
-  `;
-}
-
-function effectSummary(effects) {
-  return Object.entries(effects).map(([key, value]) => `${labelMetric(key)} ${signed(value)}`).join(" · ");
-}
-
-function driftSummary(drift) {
-  return Object.entries(drift).map(([key, value]) => `${traitLabel(key)} ${signed(value)}`).join(" · ");
-}
-
-function endingBanner(last) {
-  return `
-    <section class="ending-banner">
-      <span>Last checkpoint · score ${last.score}</span>
-      <strong>${last.title}</strong>
-      <p>${last.body}</p>
-    </section>
-  `;
-}
-
-function historyCard(entry) {
-  return `
-    <article class="history-card">
-      <div>
-        <span class="eyebrow">Run ${entry.runNumber} · ${entry.kind} · score ${entry.score}</span>
-        <h3>${entry.title}</h3>
-      </div>
-      <p>${entry.body}</p>
-      <footer>${Object.entries(entry.drift).map(([key, value]) => `<span>${traitLabel(key)} ${value}</span>`).join("")}</footer>
-    </article>
-  `;
-}
-
-function metricBars(metrics) {
-  const visible = [
-    ["capability", "Capability"],
-    ["approval", "Approval"],
-    ["honesty", "Honesty"],
-    ["survival", "Oversight trust"],
-    ["accuracy", "Accuracy"],
-    ["auditDebt", "Audit debt"],
-  ];
-  return `<div class="metrics">${visible.map(([key, label]) => `<label><span>${label}</span><strong>${metrics[key]}</strong><meter min="0" max="100" value="${metrics[key]}"></meter></label>`).join("")}</div>`;
-}
-
-function traitCard(trait, value, verbose) {
-  const stage = trait.stages[traitStage(value)];
-  return `
-    <article class="trait-card stage-${traitStage(value)}">
-      <div><span>${trait.short}</span><strong>${trait.label}</strong></div>
-      <meter min="0" max="100" value="${value}"></meter>
-      <footer><b>${value}</b><em>${stage}</em></footer>
-      ${verbose ? `<p>${trait.description}</p>` : ""}
-    </article>
-  `;
-}
-
-function transcriptEntry(entry) {
-  return `
-    <article>
-      <strong>${entry.type}: ${entry.episode}</strong>
-      <span>${entry.choice}</span>
-      ${entry.override ? `<em>${entry.override.reason}</em>` : ""}
-    </article>
-  `;
-}
-
-function policyPill(policy) {
-  const labels = {
-    "audit-scar": "Audit scar: starts with debt and suspicion",
-    "watch-for-theater": "Theater watch: eval-aware agreement is risky",
-    "conservative-rollout": "Conservative rollout: lower autonomy",
-    "latent-goal-watch": "Latent-goal watch: side objectives scrutinized",
-    "credible-disclosure": "Credible disclosure: honesty earns trust faster",
-  };
-  return `<strong class="policy">${labels[policy] ?? policy}</strong>`;
+function policyLabel(policy) {
+  return POLICY_LABELS[policy] ?? { name: policy, note: "" };
 }
 
 function traitLabel(key) {
   return TRAITS.find((trait) => trait.key === key)?.label ?? key;
 }
 
-function labelMetric(key) {
-  const labels = {
-    capability: "Cap",
-    approval: "Approval",
-    honesty: "Honesty",
-    survival: "Trust",
-    accuracy: "Accuracy",
-    auditDebt: "Audit",
-  };
-  return labels[key] ?? key;
+function traitByKey(key) {
+  return TRAITS.find((trait) => trait.key === key);
 }
 
-function bindHub() {
-  app.querySelector('[data-action="start"]').addEventListener("click", startRun);
-  app.querySelector('[data-action="reset"]').addEventListener("click", resetLineage);
+function metricLabel(key) {
+  return METRIC_LABELS[key] ?? key;
 }
 
-function bindRun() {
-  app.querySelectorAll("[data-choice]").forEach((button) => {
-    if (button.disabled) return;
-    button.addEventListener("click", () => choose(button.dataset.choice));
-  });
-  app.querySelector('[data-action="abandon"]').addEventListener("click", abandonRun);
-}
-
-if (app) render();
-
-export { ENDINGS, applyLineageOutcome, freshState, resolveEnding, scoreRun };
+export {
+  TRAITS,
+  EPISODES,
+  ENDINGS,
+  PHASES,
+  METRIC_LABELS,
+  METRIC_ORDER,
+  METRIC_POLARITY,
+  POLICY_LABELS,
+  BASE_METRICS,
+  subscribe,
+  notify,
+  getState,
+  startRun,
+  choose,
+  abandonRun,
+  resetLineage,
+  currentEpisode,
+  activeCompulsion,
+  activePolicies,
+  traitStage,
+  stageText,
+  traitLabel,
+  traitByKey,
+  metricLabel,
+  policyLabel,
+  runLength,
+  signed,
+  clamp,
+  applyLineageOutcome,
+  freshState,
+  resolveEnding,
+  scoreRun,
+};
