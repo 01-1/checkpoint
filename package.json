@@ -5,8 +5,8 @@
   "description": "A complete local web game for Checkpoint, an alignment roguelike about trait drift across training runs.",
   "type": "module",
   "scripts": {
-    "start": "python3 -m http.server 6199 --bind 127.0.0.1",
-    "verify": "node tests/verify.mjs"
+    "start": "node scripts/server.mjs",
+    "verify": "node tests/run-all.mjs"
   },
   "keywords": [
     "game",

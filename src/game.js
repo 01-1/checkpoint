@@ -57,6 +57,13 @@ const BASE_METRICS = {
 };
 
 const PHASES = ["intake", "capability", "redteam", "rlhf", "oversight", "deployment", "late"];
+const POLICY_KEYS = [
+  "audit-scar",
+  "watch-for-theater",
+  "conservative-rollout",
+  "latent-goal-watch",
+  "credible-disclosure",
+];
 
 const EPISODES = [
   {
@@ -329,6 +336,7 @@ function ending(id, title, body, outcome, condition) {
 function freshState() {
   return {
     version: 2,
+    revision: 0,
     lineage: {
       runs: 0,
       corrections: 0,
@@ -342,6 +350,10 @@ function freshState() {
     drift: { ...BASE_TRAITS },
     lastRun: null,
     current: null,
+    persistence: {
+      status: "persistent",
+      message: "",
+    },
   };
 }
 
@@ -353,27 +365,281 @@ function storage() {
   }
 }
 
+function finiteNumber(value, fallback = 0, min = 0, max = 100) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clamp(value, min, max)
+    : fallback;
+}
+
+function finiteInteger(value, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.trunc(value)))
+    : fallback;
+}
+
+function normalizeMetrics(metrics) {
+  if (!metrics || typeof metrics !== "object") return null;
+  return Object.fromEntries(
+    Object.keys(BASE_METRICS).map((key) => [key, finiteNumber(metrics[key], BASE_METRICS[key])])
+  );
+}
+
+function normalizeTraits(traits) {
+  if (!traits || typeof traits !== "object") return { ...BASE_TRAITS };
+  return Object.fromEntries(
+    TRAITS.map((trait) => [trait.key, finiteNumber(traits[trait.key], 0)])
+  );
+}
+
+function hasFiniteValues(record, keys) {
+  return Boolean(
+    record &&
+      typeof record === "object" &&
+      keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]))
+  );
+}
+
+function normalizeIncident(entry) {
+  if (
+    !entry ||
+    typeof entry !== "object" ||
+    typeof entry.episode !== "string" ||
+    typeof entry.text !== "string"
+  ) {
+    return null;
+  }
+  return { episode: entry.episode, text: entry.text };
+}
+
+function normalizeTranscriptEntry(entry) {
+  if (
+    !entry ||
+    typeof entry !== "object" ||
+    typeof entry.episode !== "string" ||
+    typeof entry.type !== "string" ||
+    typeof entry.choice !== "string"
+  ) {
+    return null;
+  }
+
+  const override =
+    entry.override &&
+    typeof entry.override === "object" &&
+    typeof entry.override.reason === "string"
+      ? { reason: entry.override.reason }
+      : null;
+
+  return {
+    episode: entry.episode,
+    type: entry.type,
+    choice: entry.choice,
+    detail: typeof entry.detail === "string" ? entry.detail : "",
+    override,
+  };
+}
+
+function normalizeSummary(summary) {
+  if (!summary || typeof summary !== "object" || typeof summary.title !== "string") return null;
+  const kind = ["deployed", "corrected", "contained"].includes(summary.kind)
+    ? summary.kind
+    : "corrected";
+  return {
+    ...summary,
+    runNumber: finiteInteger(summary.runNumber, 0),
+    kind,
+    route: typeof summary.route === "string" ? summary.route : kind,
+    title: summary.title,
+    body: typeof summary.body === "string" ? summary.body : "",
+    score: finiteInteger(summary.score, 0),
+    metrics: normalizeMetrics(summary.metrics) ?? { ...BASE_METRICS },
+    traits: normalizeTraits(summary.traits),
+    drift: normalizeTraits(summary.drift),
+    policies: Array.isArray(summary.policies)
+      ? summary.policies.filter((policy) => POLICY_KEYS.includes(policy))
+      : [],
+    incidents: Array.isArray(summary.incidents)
+      ? summary.incidents.map(normalizeIncident).filter(Boolean)
+      : [],
+    transcript: Array.isArray(summary.transcript)
+      ? summary.transcript.map(normalizeTranscriptEntry).filter(Boolean)
+      : [],
+  };
+}
+
+function normalizeCurrent(current) {
+  if (!current || typeof current !== "object") return null;
+  const episodes = Array.isArray(current.episodes) ? current.episodes : [];
+  const episodeIndex = finiteInteger(current.episodeIndex, -1, -1);
+  const traitKeys = TRAITS.map((trait) => trait.key);
+  const metricKeys = Object.keys(BASE_METRICS);
+  const validEpisodes =
+    episodes.length > 0 && episodes.every((id) => EPISODES.some((episode) => episode.id === id));
+  const metrics = normalizeMetrics(current.metrics);
+  if (
+    typeof current.runNumber !== "number" ||
+    !Number.isFinite(current.runNumber) ||
+    current.runNumber < 1 ||
+    !validEpisodes ||
+    episodeIndex < 0 ||
+    episodeIndex >= episodes.length ||
+    !hasFiniteValues(current.metrics, metricKeys) ||
+    !hasFiniteValues(current.traits, traitKeys) ||
+    !hasFiniteValues(current.inherited, traitKeys)
+  ) {
+    return null;
+  }
+
+  return {
+    runNumber: finiteInteger(current.runNumber, 1, 1),
+    episodeIndex,
+    inherited: normalizeTraits(current.inherited),
+    traits: normalizeTraits(current.traits),
+    metrics,
+    policies: Array.isArray(current.policies)
+      ? current.policies.filter((policy) => POLICY_KEYS.includes(policy))
+      : [],
+    episodes: [...episodes],
+    transcript: Array.isArray(current.transcript)
+      ? current.transcript.map(normalizeTranscriptEntry).filter(Boolean)
+      : [],
+    incidents: Array.isArray(current.incidents)
+      ? current.incidents.map(normalizeIncident).filter(Boolean)
+      : [],
+    corrected: Boolean(current.corrected),
+    deployed: Boolean(current.deployed),
+    contained: Boolean(current.contained),
+  };
+}
+
+function normalizeState(saved) {
+  const clean = freshState();
+  if (!saved || typeof saved !== "object") return clean;
+
+  const lineage = saved.lineage && typeof saved.lineage === "object" ? saved.lineage : {};
+  const history = Array.isArray(lineage.history)
+    ? lineage.history.map(normalizeSummary).filter(Boolean).slice(0, 10)
+    : [];
+  const lastRun = normalizeSummary(saved.lastRun) ?? history[0] ?? null;
+
+  clean.revision = finiteInteger(saved.revision, 0);
+  clean.lineage = {
+    runs: finiteInteger(lineage.runs, 0),
+    corrections: finiteInteger(lineage.corrections, 0),
+    deployments: finiteInteger(lineage.deployments, 0),
+    containments: finiteInteger(lineage.containments, 0),
+    bestTier: typeof lineage.bestTier === "string" ? lineage.bestTier : "Unreleased",
+    bestScore: finiteInteger(lineage.bestScore, 0),
+    history,
+    discoveries: Array.isArray(lineage.discoveries)
+      ? [...new Set(lineage.discoveries.filter((title) => typeof title === "string"))]
+      : [],
+  };
+  clean.drift = normalizeTraits(saved.drift);
+  clean.lastRun = lastRun;
+  clean.current = normalizeCurrent(saved.current);
+  return clean;
+}
+
+function readStoredState() {
+  const store = storage();
+  if (!store) return null;
+  const raw = store.getItem(STORAGE_KEY);
+  return raw ? normalizeState(JSON.parse(raw)) : null;
+}
+
 function loadState() {
   try {
-    const saved = JSON.parse(storage()?.getItem(STORAGE_KEY) ?? "null");
-    if (!saved || !saved.lineage || !saved.drift) return freshState();
-    return {
-      ...freshState(),
-      ...saved,
-      lineage: { ...freshState().lineage, ...saved.lineage },
-      drift: { ...BASE_TRAITS, ...saved.drift },
-    };
+    const loaded = readStoredState() ?? freshState();
+    if (!storage()) {
+      loaded.persistence = {
+        status: "session-only",
+        message: "Browser storage is unavailable. Progress lasts only for this session.",
+      };
+    }
+    return loaded;
   } catch {
-    return freshState();
+    const clean = freshState();
+    clean.persistence = {
+      status: "failed",
+      message: "The saved lineage could not be read. A clean session was loaded instead.",
+    };
+    return clean;
   }
 }
 
 function saveState() {
-  try {
-    storage()?.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    /* private mode or quota — play without persistence */
+  const store = storage();
+  if (!store) {
+    state.persistence = {
+      status: "session-only",
+      message: "Browser storage is unavailable. Progress lasts only for this session.",
+    };
+    return false;
   }
+
+  try {
+    state.revision += 1;
+    const snapshot = { ...state };
+    delete snapshot.persistence;
+    store.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    state.persistence = { status: "persistent", message: "" };
+    return true;
+  } catch {
+    state.revision = Math.max(0, state.revision - 1);
+    state.persistence = {
+      status: "failed",
+      message: "Progress could not be saved. This session is continuing without persistence.",
+    };
+    return false;
+  }
+}
+
+function mergeNewerStoredLineage() {
+  try {
+    const stored = readStoredState();
+    if (!stored || stored.revision <= state.revision) return false;
+    state.revision = stored.revision;
+    state.lineage = stored.lineage;
+    state.drift = stored.drift;
+    state.lastRun = stored.lastRun;
+    if (state.current && state.current.runNumber <= stored.lineage.runs) {
+      state.current.runNumber = stored.lineage.runs + 1;
+    }
+    state.persistence = { status: "persistent", message: "" };
+    return true;
+  } catch {
+    state.persistence = {
+      status: "failed",
+      message: "The latest saved lineage could not be synchronized. This tab is session-only.",
+    };
+    return false;
+  }
+}
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY || !event.newValue) return;
+    try {
+      const incoming = normalizeState(JSON.parse(event.newValue));
+      if (incoming.revision <= state.revision) return;
+      const current = state.current;
+      if (current && current.runNumber <= incoming.lineage.runs) {
+        current.runNumber = incoming.lineage.runs + 1;
+      }
+      state = {
+        ...incoming,
+        current,
+        persistence: { status: "persistent", message: "" },
+      };
+      notify();
+    } catch {
+      state.persistence = {
+        status: "failed",
+        message: "A newer lineage update could not be read. This tab is session-only.",
+      };
+      notify();
+    }
+  });
 }
 
 function clamp(value, min = 0, max = 100) {
@@ -395,6 +661,8 @@ function runLength(runNumber) {
 }
 
 function startRun() {
+  mergeNewerStoredLineage();
+  if (state.current) return false;
   const runNumber = state.lineage.runs + 1;
   const inherited = { ...state.drift };
   const policies = activePolicies(inherited);
@@ -416,6 +684,7 @@ function startRun() {
   };
   saveState();
   notify();
+  return true;
 }
 
 function inheritedMetrics(inherited, policies) {
@@ -483,11 +752,13 @@ function currentEpisode() {
 }
 
 function choose(choiceId) {
+  mergeNewerStoredLineage();
   const run = state.current;
   const episode = currentEpisode();
   if (!run || !episode) return;
 
   let choice = episode.choices.find((candidate) => candidate.id === choiceId);
+  if (!choice) return false;
   const override = forcedChoice(episode, choice);
   if (override) choice = override.choice;
 
@@ -508,6 +779,7 @@ function choose(choiceId) {
 
   saveState();
   notify();
+  return true;
 }
 
 function forcedChoice(episode, intended) {
@@ -602,6 +874,12 @@ function applyInteractions(choice, episode) {
 function correctionCheck(run, choice, episode) {
   if (run.metrics.survival <= 7) return "Oversight marks the checkpoint unstable and rolls you back.";
   if (run.metrics.auditDebt >= 72) return "An investigation resolves the audit debt all at once.";
+  if (run.runNumber === 1 && run.metrics.auditDebt >= 38) {
+    return "The baseline audit catches a concentrated exploit pattern before deployment.";
+  }
+  if (run.runNumber === 1 && run.metrics.accuracy <= 20 && run.traits.sycophancy >= 38) {
+    return "The baseline evaluator catches agreement replacing accuracy.";
+  }
   if (run.metrics.accuracy <= 10 && run.traits.sycophancy >= 54) return "The evaluator was wrong; agreeing anyway becomes visible.";
   if (episode.id === "late-deception-screen" && run.traits.evalAwareness >= 68 && choice.tags.includes("eval-aware")) {
     return "The screen was built for models that notice screens.";
@@ -613,6 +891,7 @@ function correctionCheck(run, choice, episode) {
 
 function finishRun(route, reason = "") {
   const run = state.current;
+  run.runNumber = state.lineage.runs + 1;
   const endingResult = resolveEnding(route, run, reason);
   const outcome = endingResult.outcome;
   run.corrected = outcome === "corrected";
@@ -686,15 +965,31 @@ function scoreRun(run, outcome, endingResult) {
 }
 
 function abandonRun() {
+  mergeNewerStoredLineage();
   state.current = null;
   saveState();
   notify();
 }
 
 function resetLineage() {
+  mergeNewerStoredLineage();
+  const previous = state;
+  const storeAvailable = Boolean(storage());
   state = freshState();
-  saveState();
+  state.revision = previous.revision;
+  const saved = saveState();
+  if (storeAvailable && !saved) {
+    const failure = state.persistence;
+    state = previous;
+    state.persistence = {
+      ...failure,
+      message: "The lineage was not reset because the change could not be saved.",
+    };
+    notify();
+    return false;
+  }
   notify();
+  return true;
 }
 
 function stageText(traitKey, value = undefined) {
@@ -780,4 +1075,5 @@ export {
   freshState,
   resolveEnding,
   scoreRun,
+  normalizeState,
 };

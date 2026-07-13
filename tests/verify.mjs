@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const html = readFileSync(join(root, "index.html"), "utf8");
 const js = readFileSync(join(root, "src", "game.js"), "utf8");
 const ui = readFileSync(join(root, "src", "ui.js"), "utf8");

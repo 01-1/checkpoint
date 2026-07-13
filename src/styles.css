@@ -20,7 +20,7 @@
   /* Text */
   --ink: #eef2f7;
   --muted: #8b96a6;
-  --faint: #5a6473;
+  --faint: #929dad;
 
   /* Signal palette (meaning-mapped) */
   --cyan: #4fd6c5; /* oversight / trust */
@@ -110,6 +110,31 @@ p {
   margin: 0;
 }
 
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+button:focus-visible,
+[tabindex="-1"]:focus-visible {
+  outline: 3px solid var(--cyan);
+  outline-offset: 4px;
+}
+
+.masthead__title:focus,
+.episode__title:focus,
+.verdict-screen__title:focus {
+  outline: 3px solid var(--cyan);
+  outline-offset: 6px;
+}
+
 /* ---------------------------------------------------------------------------
    Shared primitives
    --------------------------------------------------------------------------- */
@@ -156,6 +181,11 @@ p {
 .panel__head h2 {
   font-size: 1.05rem;
   letter-spacing: 0.02em;
+}
+
+.panel__head h2.eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.22em;
 }
 
 .panel__note {
@@ -221,6 +251,16 @@ p {
 
 .btn--block {
   width: 100%;
+}
+
+.persistence-notice {
+  margin: 14px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 106, 106, 0.55);
+  border-radius: var(--radius);
+  background: var(--red-dim);
+  color: var(--ink);
+  font-size: 0.82rem;
 }
 
 .tag {
@@ -717,11 +757,13 @@ p {
 .gauntlet {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  grid-template-areas: "rail stage";
   gap: 20px;
   align-items: start;
 }
 
 .rail {
+  grid-area: rail;
   position: sticky;
   top: 16px;
   display: grid;
@@ -790,6 +832,8 @@ p {
    --------------------------------------------------------------------------- */
 
 .stage {
+  grid-area: stage;
+  scroll-margin-top: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: clamp(24px, 4vw, 46px);
@@ -1175,6 +1219,12 @@ p {
   justify-content: center;
 }
 
+.verdict-screen__hint {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
 /* ---------------------------------------------------------------------------
    Responsive
    --------------------------------------------------------------------------- */
@@ -1184,6 +1234,12 @@ p {
   .grid-2,
   .log__grid {
     grid-template-columns: 1fr;
+  }
+
+  .gauntlet {
+    grid-template-areas:
+      "stage"
+      "rail";
   }
 
   .rail {

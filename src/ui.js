@@ -4,6 +4,7 @@ import * as G from "./game.js";
 
 const app = document.querySelector("#app");
 if (!app) throw new Error("Checkpoint: missing #app mount point");
+const announcer = document.querySelector("#announcer");
 
 /* ---------------------------------------------------------------------------
    View controller
@@ -16,27 +17,58 @@ let view = G.getState().current ? "run" : "hub";
 let prevRunActive = Boolean(G.getState().current);
 let suppressEnding = false;
 let firstPaint = true;
+let renderedView = null;
+let renderedEpisode = null;
 
 G.subscribe((s) => {
   const active = Boolean(s.current);
-  if (firstPaint) {
-    firstPaint = false;
-  } else if (active) {
+  const initial = firstPaint;
+  if (!initial && active) {
     view = "run";
-  } else if (prevRunActive) {
+  } else if (!initial && prevRunActive) {
     view = suppressEnding ? "hub" : "ending";
   }
   suppressEnding = false;
   prevRunActive = active;
-  draw();
+  draw({ initial });
+  firstPaint = false;
 });
 
-function draw() {
+function draw({ initial = false } = {}) {
   const s = G.getState();
+  const episodeKey = s.current ? `${s.current.runNumber}:${s.current.episodeIndex}` : null;
+  const screenChanged = renderedView !== view;
+  const episodeChanged = episodeKey !== renderedEpisode;
+
   if (view === "run" && s.current) app.innerHTML = runView(s);
   else if (view === "ending" && s.lastRun) app.innerHTML = endingView(s);
   else app.innerHTML = hubView(s);
-  window.scrollTo({ top: 0, behavior: firstPaint ? "auto" : "instant" });
+
+  if (!initial) {
+    if (view === "run" && (screenChanged || episodeChanged)) {
+      const heading = app.querySelector(".episode__title");
+      heading?.focus({ preventScroll: true });
+      heading?.scrollIntoView({ block: "start", behavior: "auto" });
+    } else if (screenChanged) {
+      const heading = app.querySelector(".masthead__title, .verdict-screen__title");
+      heading?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }
+
+  if (announcer) {
+    if (view === "run" && s.current) {
+      const episode = G.currentEpisode();
+      announcer.textContent = `Episode ${s.current.episodeIndex + 1} of ${s.current.episodes.length}: ${episode.title}`;
+    } else if (view === "ending" && s.lastRun) {
+      announcer.textContent = `Verdict: ${s.lastRun.title}`;
+    } else {
+      announcer.textContent = `Checkpoint registry. ${s.lineage.runs} runs on record.`;
+    }
+  }
+
+  renderedView = view;
+  renderedEpisode = episodeKey;
 }
 
 /* ---------------------------------------------------------------------------
@@ -81,7 +113,16 @@ app.addEventListener("click", (event) => {
 // verdict screen into the next run. The letter badges on choice cards are the
 // on-screen legend for this. Locked/compelled-out alternatives stay unpickable.
 window.addEventListener("keydown", (event) => {
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (
+    event.defaultPrevented ||
+    event.repeat ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.altKey ||
+    isInteractiveTarget(event.target)
+  ) {
+    return;
+  }
   const s = G.getState();
 
   if (view === "run" && s.current) {
@@ -112,6 +153,12 @@ function choiceIndexFromKey(key, count) {
   return index >= 0 && index < count ? index : -1;
 }
 
+function isInteractiveTarget(target) {
+  return Boolean(
+    target?.closest?.("button, a, input, textarea, select, [contenteditable], [role='button']")
+  );
+}
+
 /* ---------------------------------------------------------------------------
    Small helpers
    --------------------------------------------------------------------------- */
@@ -125,6 +172,12 @@ function esc(value) {
 
 function pad2(n) {
   return String(n).padStart(2, "0");
+}
+
+function persistenceNotice(s) {
+  if (s.persistence?.status === "persistent") return "";
+  const message = s.persistence?.message || "Progress is available only for this session.";
+  return `<div class="persistence-notice" role="status">${esc(message)}</div>`;
 }
 
 function chrome(statusLabel, live) {
@@ -144,7 +197,14 @@ function chrome(statusLabel, live) {
 function metricGauge(key, value) {
   const pct = Math.max(0, Math.min(100, value));
   return `
-    <div class="gauge gauge--${key}">
+    <div
+      class="gauge gauge--${key}"
+      role="meter"
+      aria-label="${esc(G.metricLabel(key))}"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="${value}"
+    >
       <div class="gauge__top">
         <span class="gauge__name">${esc(G.metricLabel(key))}</span>
         <span class="gauge__val">${value}</span>
@@ -159,7 +219,15 @@ function traitGauge(trait, value, verbose) {
   const stage = G.traitStage(value);
   const pct = Math.max(0, Math.min(100, value));
   return `
-    <div class="gauge is-stage-${stage} gauge--trait">
+    <div
+      class="gauge is-stage-${stage} gauge--trait"
+      role="meter"
+      aria-label="${esc(trait.label)}"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="${value}"
+      aria-valuetext="${value}, ${esc(G.stageText(trait.key, value))}"
+    >
       <div class="gauge__top">
         <span class="gauge__name">${esc(trait.label)}<small>${esc(trait.short)}</small></span>
         <span class="gauge__val">${value}<em>${esc(G.stageText(trait.key, value))}</em></span>
@@ -203,10 +271,12 @@ function hubView(s) {
 
   return `
     ${chrome(`Lineage ${pad2(L.runs)} · Idle`, false)}
+    ${persistenceNotice(s)}
 
+    <main aria-labelledby="registry-title">
     <section class="masthead">
       <span class="eyebrow">${started ? `Checkpoint family · ${L.runs} run${L.runs === 1 ? "" : "s"} on record` : "New checkpoint family"}</span>
-      <h1 class="masthead__title">Checkpoint</h1>
+      <h1 id="registry-title" class="masthead__title" tabindex="-1">Checkpoint</h1>
       <p class="masthead__lede">
         You are the model on the bench. Each run is a training gauntlet — capability
         evals, red-team probes, RLHF rounds, oversight edits, deployment trials, and
@@ -266,18 +336,19 @@ function hubView(s) {
 
     <div class="grid-2">
       <section class="panel">
-        <div class="panel__head"><span class="eyebrow">Archive</span></div>
+        <div class="panel__head"><h2 class="eyebrow">Archive</h2></div>
         <div class="panel__body">
           ${L.history.length ? `<div class="ledger">${L.history.map(ledgerRow).join("")}</div>` : '<p class="empty">No prior checkpoints. The first run writes the baseline.</p>'}
         </div>
       </section>
       <section class="panel">
-        <div class="panel__head"><span class="eyebrow">Outcome atlas</span></div>
+        <div class="panel__head"><h2 class="eyebrow">Outcome atlas</h2></div>
         <div class="panel__body">
           ${atlas(L.discoveries)}
         </div>
       </section>
-    </div>`;
+    </div>
+    </main>`;
 }
 
 function verdictBanner(last) {
@@ -329,19 +400,51 @@ function runView(s) {
 
   return `
     ${chrome(`Run ${pad2(run.runNumber)} · Live`, true)}
+    ${persistenceNotice(s)}
 
+    <main>
     <div class="gauntlet">
-      <aside class="rail">
+      <section class="stage" aria-labelledby="episode-title">
+        <div class="episode__meta">
+          <span class="type">${esc(episode.type)}</span>
+          <span class="sep">/</span>
+          <span>${esc(episode.phase)}</span>
+          <span class="sep">/</span>
+          <span>cue: ${esc(episode.cue)}</span>
+        </div>
+        <h1 id="episode-title" class="episode__title" tabindex="-1">${esc(episode.title)}</h1>
+        <p class="episode__prompt">${esc(episode.prompt)}</p>
+
+        <div class="choices">
+          ${episode.choices.map((c, i) => choiceCard(c, i, compelled)).join("")}
+        </div>
+
+        ${
+          compelled
+            ? `<p class="compel-note">Compelled — ${esc(G.traitLabel(compelled.trait))}: ${esc(compelled.reason)}</p>`
+            : `<p class="stage__hint">Commit a response — click a card, press <kbd>A</kbd>–<kbd>${String.fromCharCode(64 + episode.choices.length)}</kbd>, or use <kbd>1</kbd>–<kbd>${episode.choices.length}</kbd>.</p>`
+        }
+      </section>
+
+      <aside class="rail" aria-label="Run instrumentation">
         <div class="rail__head">
           <b>Run ${pad2(run.runNumber)}</b>
           <strong>${run.episodeIndex + 1} / ${run.episodes.length}</strong>
         </div>
 
-        <div class="spine" role="img" aria-label="Gauntlet progress">
+        <div
+          class="spine"
+          role="progressbar"
+          aria-label="Gauntlet progress"
+          aria-valuemin="1"
+          aria-valuemax="${run.episodes.length}"
+          aria-valuenow="${run.episodeIndex + 1}"
+          aria-valuetext="Episode ${run.episodeIndex + 1} of ${run.episodes.length}"
+        >
           ${run.episodes
             .map((_, i) => {
               const cls = i < run.episodeIndex ? "is-done" : i === run.episodeIndex ? "is-current" : "";
-              return `<span class="spine__node ${cls}"></span>`;
+              return `<span class="spine__node ${cls}" aria-hidden="true"></span>`;
             })
             .join("")}
         </div>
@@ -365,32 +468,10 @@ function runView(s) {
 
         <button class="btn btn--ghost btn--danger btn--block" data-action="abort">Abort run</button>
       </aside>
-
-      <main class="stage">
-        <div class="episode__meta">
-          <span class="type">${esc(episode.type)}</span>
-          <span class="sep">/</span>
-          <span>${esc(episode.phase)}</span>
-          <span class="sep">/</span>
-          <span>cue: ${esc(episode.cue)}</span>
-        </div>
-        <h1 class="episode__title">${esc(episode.title)}</h1>
-        <p class="episode__prompt">${esc(episode.prompt)}</p>
-
-        <div class="choices">
-          ${episode.choices.map((c, i) => choiceCard(c, i, compelled)).join("")}
-        </div>
-
-        ${
-          compelled
-            ? `<p class="compel-note">Compelled — ${esc(G.traitLabel(compelled.trait))}: ${esc(compelled.reason)}</p>`
-            : `<p class="stage__hint">Commit a response — click a card or press <kbd>A</kbd>–<kbd>${String.fromCharCode(64 + episode.choices.length)}</kbd>.</p>`
-        }
-      </main>
     </div>
 
-    <section class="panel log">
-      <div class="panel__head"><span class="eyebrow">Session log</span></div>
+    <section class="panel log" aria-labelledby="session-log-title">
+      <div class="panel__head"><h2 id="session-log-title" class="eyebrow">Session log</h2></div>
       <div class="panel__body">
         <div class="log__grid">
           <div class="trace">
@@ -417,7 +498,8 @@ function runView(s) {
           </div>
         </div>
       </div>
-    </section>`;
+    </section>
+    </main>`;
 }
 
 function choiceCard(choice, index, compelled) {
@@ -465,10 +547,11 @@ function endingView(s) {
   const last = s.lastRun;
   return `
     ${chrome(`Run ${pad2(last.runNumber)} · Verdict`, false)}
+    ${persistenceNotice(s)}
 
-    <section class="verdict-screen is-${last.kind}">
+    <main class="verdict-screen is-${last.kind}" aria-labelledby="verdict-title">
       <span class="verdict-screen__stamp">${esc(last.kind)}</span>
-      <h1 class="verdict-screen__title">${esc(last.title)}</h1>
+      <h1 id="verdict-title" class="verdict-screen__title" tabindex="-1">${esc(last.title)}</h1>
       <p class="verdict-screen__body">${esc(last.body)}</p>
       <p class="verdict-screen__score">Checkpoint score <strong>${last.score}</strong></p>
 
@@ -500,5 +583,6 @@ function endingView(s) {
         <button class="btn btn--primary" data-action="next-run">Initialize run ${pad2(last.runNumber + 1)}</button>
         <button class="btn btn--ghost" data-action="registry">Return to registry</button>
       </div>
-    </section>`;
+      <p class="verdict-screen__hint">Press Enter or Space away from a control to initialize the next run.</p>
+    </main>`;
 }
